@@ -454,7 +454,7 @@ class BrowserSelectionServer:
                     return
                 outer._handle_submit(self)
 
-            def log_message(self, _format: str, *args: Any) -> None:
+            def log_message(self, format: str, *args: Any) -> None:
                 return
 
         return RequestHandler
@@ -470,7 +470,7 @@ class BrowserSelectionServer:
     def _handle_state(self, handler: BaseHTTPRequestHandler) -> None:
         with self.condition:
             image_path = self.state.image_path
-            payload = {
+            payload: dict[str, object] = {
                 "hasImage": image_path is not None,
                 "imageName": image_path.name if image_path is not None else None,
                 "imageUrl": "/image",
