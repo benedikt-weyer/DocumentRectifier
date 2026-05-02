@@ -327,6 +327,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const LOUPE_ZOOM = 4;
         const LOUPE_OFFSET_X = 24;
         const LOUPE_OFFSET_Y = 24;
+        const DRAG_DAMPING = 0.35;
 
         let currentVersion = null;
         let currentImageName = null;
@@ -334,6 +335,8 @@ HTML_PAGE = """<!DOCTYPE html>
         let points = [];
         let dragIndex = null;
         let activePointerId = null;
+        let dragOriginPoint = null;
+        let dragOriginClient = null;
 
         function setStatus(text) {
             statusElement.textContent = text;
@@ -406,12 +409,12 @@ HTML_PAGE = """<!DOCTYPE html>
             const bounds = canvas.getBoundingClientRect();
             return {
                 x: clamp(
-                    Math.round((event.clientX - bounds.left) / scale),
+                    (event.clientX - bounds.left) / scale,
                     0,
                     Math.max(image.naturalWidth - 1, 0),
                 ),
                 y: clamp(
-                    Math.round((event.clientY - bounds.top) / scale),
+                    (event.clientY - bounds.top) / scale,
                     0,
                     Math.max(image.naturalHeight - 1, 0),
                 ),
@@ -443,7 +446,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 pointsElement.innerHTML = "<span>No points selected yet.</span>";
             } else {
                 pointsElement.innerHTML = points
-                    .map((point, index) => `<span><strong>${index + 1}.</strong> (${point.x}, ${point.y})</span>`)
+                    .map((point, index) => `<span><strong>${index + 1}.</strong> (${Math.round(point.x)}, ${Math.round(point.y)})</span>`)
                     .join("");
             }
             saveButton.disabled = points.length !== 4;
@@ -595,12 +598,13 @@ HTML_PAGE = """<!DOCTYPE html>
             if (hitIndex !== -1) {
                 dragIndex = hitIndex;
                 activePointerId = event.pointerId;
+                dragOriginPoint = { ...points[hitIndex] };
+                dragOriginClient = { x: event.clientX, y: event.clientY };
                 canvas.setPointerCapture(event.pointerId);
                 canvas.style.cursor = "grabbing";
-                points[dragIndex] = point;
                 renderPoints();
                 draw();
-                drawLoupe(point, event.clientX, event.clientY);
+                drawLoupe(points[dragIndex], event.clientX, event.clientY);
                 return;
             }
 
@@ -608,7 +612,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 return;
             }
 
-            points.push(point);
+            points.push({ x: Math.round(point.x), y: Math.round(point.y) });
             renderPoints();
             draw();
         });
@@ -625,11 +629,15 @@ HTML_PAGE = """<!DOCTYPE html>
                 return;
             }
 
-            const point = getCanvasPoint(event);
-            points[dragIndex] = point;
+            const deltaX = (event.clientX - dragOriginClient.x) / Math.max(scale, 0.001);
+            const deltaY = (event.clientY - dragOriginClient.y) / Math.max(scale, 0.001);
+            points[dragIndex] = {
+                x: clamp(dragOriginPoint.x + deltaX * DRAG_DAMPING, 0, Math.max(image.naturalWidth - 1, 0)),
+                y: clamp(dragOriginPoint.y + deltaY * DRAG_DAMPING, 0, Math.max(image.naturalHeight - 1, 0)),
+            };
             renderPoints();
             draw();
-            drawLoupe(point, event.clientX, event.clientY);
+            drawLoupe(points[dragIndex], event.clientX, event.clientY);
         });
 
         function finishDrag(event) {
@@ -642,6 +650,8 @@ HTML_PAGE = """<!DOCTYPE html>
             }
             dragIndex = null;
             activePointerId = null;
+            dragOriginPoint = null;
+            dragOriginClient = null;
             hideLoupe();
             updateCanvasCursor(event);
             renderPoints();
@@ -664,6 +674,8 @@ HTML_PAGE = """<!DOCTYPE html>
             points = [];
             dragIndex = null;
             activePointerId = null;
+            dragOriginPoint = null;
+            dragOriginClient = null;
             hideLoupe();
             renderPoints();
             draw();
