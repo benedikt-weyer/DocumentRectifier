@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 from threading import Condition, Thread
-from typing import Any
+from typing import Any, Sequence
 import webbrowser
 
 import cv2
@@ -204,6 +204,10 @@ HTML_PAGE = """<!DOCTYPE html>
             gap: 12px;
         }
 
+        .actions .wide {
+            grid-column: 1 / -1;
+        }
+
         button {
             appearance: none;
             border: 0;
@@ -293,6 +297,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 </section>
 
                 <section class="actions">
+                    <button class="secondary wide" id="auto-detect">Auto Detect Corners</button>
                     <button class="primary" id="save" disabled>Save Crop</button>
                     <button class="secondary" id="reset">Reset</button>
                     <button id="skip">Skip</button>
@@ -320,6 +325,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const imageNameElement = document.getElementById("image-name");
         const pointsElement = document.getElementById("points");
         const saveButton = document.getElementById("save");
+        const autoDetectButton = document.getElementById("auto-detect");
         const image = new Image();
 
         const HANDLE_RADIUS = 12;
@@ -462,6 +468,46 @@ HTML_PAGE = """<!DOCTYPE html>
                     .join("");
             }
             saveButton.disabled = points.length !== 4;
+            autoDetectButton.disabled = !image.naturalWidth;
+        }
+
+        async function autoDetectCorners() {
+            if (!image.naturalWidth) {
+                return;
+            }
+
+            autoDetectButton.disabled = true;
+            try {
+                const response = await fetch("/auto-detect", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({}),
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    setStatus(errorText || `Auto detect failed: ${response.status}`);
+                    return;
+                }
+
+                const payload = await response.json();
+                points = payload.points.map((point) => ({
+                    x: Number(point.x),
+                    y: Number(point.y),
+                }));
+                dragIndex = null;
+                activePointerId = null;
+                dragOriginPoint = null;
+                dragOriginClient = null;
+                hideLoupe();
+                renderPoints();
+                draw();
+                setStatus(payload.message || `Auto-detected corners for ${currentImageName}`);
+            } catch (error) {
+                setStatus(error.message);
+            } finally {
+                renderPoints();
+            }
         }
 
         function renderProgress(state) {
@@ -685,13 +731,17 @@ HTML_PAGE = """<!DOCTYPE html>
             setStatus(currentImageName ? `Reset points for ${currentImageName}` : "Waiting for image...");
         });
         document.getElementById("save").addEventListener("click", () => submit("save"));
+        autoDetectButton.addEventListener("click", autoDetectCorners);
         document.getElementById("skip").addEventListener("click", () => submit("skip"));
         document.getElementById("quit").addEventListener("click", () => submit("quit"));
         window.addEventListener("resize", () => {
             draw();
             hideLoupe();
         });
-        image.addEventListener("load", draw);
+        image.addEventListener("load", () => {
+            draw();
+            renderPoints();
+        });
 
         renderPoints();
         setInterval(() => {
@@ -772,6 +822,9 @@ class BrowserSelectionServer:
                 outer._handle_index(self)
 
             def do_POST(self) -> None:  # noqa: N802
+                if self.path == "/auto-detect":
+                    outer._handle_auto_detect(self)
+                    return
                 if self.path != "/submit":
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return
@@ -864,6 +917,37 @@ class BrowserSelectionServer:
         handler.send_response(HTTPStatus.NO_CONTENT)
         handler.end_headers()
 
+    def _handle_auto_detect(self, handler: BaseHTTPRequestHandler) -> None:
+        with self.condition:
+            image_path = self.state.image_path
+
+        if image_path is None:
+            body = b"No active image"
+            handler.send_response(HTTPStatus.CONFLICT)
+            handler.send_header("Content-Type", "text/plain; charset=utf-8")
+            handler.send_header("Content-Length", str(len(body)))
+            handler.end_headers()
+            handler.wfile.write(body)
+            return
+
+        points, message = detect_document_corners(image_path)
+
+        body = json.dumps(
+            {
+                "points": [
+                    {"x": int(point[0]), "y": int(point[1])}
+                    for point in points
+                ],
+                "message": message,
+            }
+        ).encode("utf-8")
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
     def start(self) -> None:
         self.thread.start()
         webbrowser.open(self.url)
@@ -922,6 +1006,114 @@ def warp_document(image: np.ndarray, points: list[tuple[int, int]]) -> np.ndarra
     destination, width, height = compute_destination(source)
     matrix = cv2.getPerspectiveTransform(source, destination)
     return cv2.warpPerspective(image, matrix, (width, height))
+
+
+def image_bounds_corners(image: np.ndarray, *, inset: int = 8) -> list[tuple[int, int]]:
+    height, width = image.shape[:2]
+    left = min(inset, max(width - 1, 0))
+    top = min(inset, max(height - 1, 0))
+    right = max(width - 1 - inset, 0)
+    bottom = max(height - 1 - inset, 0)
+    return [(left, top), (right, top), (right, bottom), (left, bottom)]
+
+
+def serialize_corners(points: np.ndarray) -> list[tuple[int, int]]:
+    ordered = order_points(points.astype(np.float32))
+    return [(int(round(point[0])), int(round(point[1]))) for point in ordered]
+
+
+def build_detection_sources(blurred: np.ndarray) -> list[np.ndarray]:
+    edges = cv2.Canny(blurred, 50, 150)
+    kernel = np.ones((5, 5), dtype=np.uint8)
+    closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+    threshold = cv2.adaptiveThreshold(
+        blurred,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        21,
+        15,
+    )
+    threshold = cv2.bitwise_not(threshold)
+    closed_threshold = cv2.morphologyEx(threshold, cv2.MORPH_CLOSE, kernel)
+    return [closed_edges, closed_threshold]
+
+
+def inspect_contours(
+    contours: Sequence[np.ndarray],
+    image_area: int,
+    best_contour: np.ndarray | None,
+) -> tuple[list[tuple[int, int]] | None, np.ndarray | None]:
+    sorted_contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    for contour in sorted_contours[:20]:
+        area = cv2.contourArea(contour)
+        if area < image_area * 0.03:
+            continue
+
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter <= 0:
+            continue
+
+        approximation = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+        if len(approximation) == 4 and cv2.isContourConvex(approximation):
+            return serialize_corners(approximation.reshape(4, 2)), best_contour
+
+        if best_contour is None:
+            best_contour = contour
+
+    return None, best_contour
+
+
+def find_document_quad(
+    contour_sources: list[np.ndarray],
+    image_area: int,
+) -> tuple[list[tuple[int, int]] | None, np.ndarray | None]:
+    best_contour: np.ndarray | None = None
+
+    for source in contour_sources:
+        contours, _hierarchy = cv2.findContours(
+            source,
+            cv2.RETR_LIST,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if not contours:
+            continue
+
+        detected_corners, best_contour = inspect_contours(contours, image_area, best_contour)
+        if detected_corners is not None:
+            return detected_corners, best_contour
+
+    return None, best_contour
+
+
+def detect_document_corners(image_path: Path) -> tuple[list[tuple[int, int]], str]:
+    image = cv2.imread(str(image_path))
+    if image is None:
+        raise RuntimeError(f"Could not read image: {image_path}")
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    image_area = image.shape[0] * image.shape[1]
+    detected_corners, best_contour = find_document_quad(
+        build_detection_sources(blurred),
+        image_area,
+    )
+
+    if detected_corners is not None:
+        return detected_corners, f"Auto-detected corners for {image_path.name}"
+
+    if best_contour is not None and cv2.contourArea(best_contour) >= image_area * 0.01:
+        rectangle = cv2.minAreaRect(best_contour)
+        box = cv2.boxPoints(rectangle)
+        return (
+            serialize_corners(box),
+            f"Estimated corners for {image_path.name}; refine if needed",
+        )
+
+    return (
+        image_bounds_corners(image),
+        f"Fell back to image bounds for {image_path.name}; refine manually",
+    )
 
 
 def ensure_directories(root: Path) -> tuple[Path, Path]:
