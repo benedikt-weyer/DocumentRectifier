@@ -5,13 +5,26 @@ Interactive OpenCV utility that rectifies document photos from the `in/` folder 
 ## Setup
 
 ```bash
-uv sync
+direnv allow
 ```
+
+The repository includes a Nix dev shell in `flake.nix` and auto-loads it through `.envrc`. Entering the directory with `direnv` enabled will:
+
+- load the Nix development environment
+- expose `run-document-rectifier` on `PATH`
+- create `.venv` with `uv sync` if it does not exist yet
+- activate the project virtual environment automatically
 
 ## Run
 
 ```bash
-uv run document-rectifier
+run-document-rectifier
+```
+
+If you want to enter the shell manually without `direnv`, run:
+
+```bash
+nix develop
 ```
 
 ## Controls
