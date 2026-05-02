@@ -419,6 +419,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 for (let index = 1; index < points.length; index += 1) {
                     context.lineTo(points[index].x * scale, points[index].y * scale);
                 }
+                if (points.length === 4) {
+                    context.closePath();
+                }
                 context.stroke();
             }
 
