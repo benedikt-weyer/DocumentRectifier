@@ -615,6 +615,12 @@ HTML_PAGE = """<!DOCTYPE html>
 
         canvas.addEventListener("pointermove", (event) => {
             if (dragIndex === null || activePointerId !== event.pointerId) {
+                if (image.naturalWidth && points.length < 4) {
+                    const point = getCanvasPoint(event);
+                    drawLoupe(point, event.clientX, event.clientY);
+                } else if (dragIndex === null) {
+                    hideLoupe();
+                }
                 updateCanvasCursor(event);
                 return;
             }
@@ -647,9 +653,11 @@ HTML_PAGE = """<!DOCTYPE html>
         canvas.addEventListener("pointerleave", (event) => {
             if (dragIndex === null) {
                 canvas.style.cursor = points.length < 4 ? "crosshair" : "default";
-            } else {
-                drawLoupe(points[dragIndex], event.clientX, event.clientY);
+                hideLoupe();
+                return;
             }
+
+            drawLoupe(points[dragIndex], event.clientX, event.clientY);
         });
 
         document.getElementById("reset").addEventListener("click", () => {
