@@ -48,8 +48,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         main {
-            max-width: 1400px;
-            margin: 0 auto;
+            width: 100%;
             padding: 24px;
             display: grid;
             gap: 20px;
