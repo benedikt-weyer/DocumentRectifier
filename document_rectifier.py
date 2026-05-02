@@ -426,6 +426,18 @@ HTML_PAGE = """<!DOCTYPE html>
             return points.findIndex((point) => Math.hypot(point.x - targetPoint.x, point.y - targetPoint.y) <= hitRadius);
         }
 
+        function beginDrag(index, event) {
+            dragIndex = index;
+            activePointerId = event.pointerId;
+            dragOriginPoint = { ...points[index] };
+            dragOriginClient = { x: event.clientX, y: event.clientY };
+            canvas.setPointerCapture(event.pointerId);
+            canvas.style.cursor = "grabbing";
+            renderPoints();
+            draw();
+            drawLoupe(points[dragIndex], event.clientX, event.clientY);
+        }
+
         function updateCanvasCursor(event) {
             if (!image.naturalWidth || dragIndex !== null) {
                 canvas.style.cursor = dragIndex !== null ? "grabbing" : "crosshair";
@@ -596,15 +608,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const hitIndex = getPointHitIndex(point);
 
             if (hitIndex !== -1) {
-                dragIndex = hitIndex;
-                activePointerId = event.pointerId;
-                dragOriginPoint = { ...points[hitIndex] };
-                dragOriginClient = { x: event.clientX, y: event.clientY };
-                canvas.setPointerCapture(event.pointerId);
-                canvas.style.cursor = "grabbing";
-                renderPoints();
-                draw();
-                drawLoupe(points[dragIndex], event.clientX, event.clientY);
+                beginDrag(hitIndex, event);
                 return;
             }
 
@@ -613,8 +617,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
 
             points.push({ x: Math.round(point.x), y: Math.round(point.y) });
-            renderPoints();
-            draw();
+            beginDrag(points.length - 1, event);
         });
 
         canvas.addEventListener("pointermove", (event) => {
