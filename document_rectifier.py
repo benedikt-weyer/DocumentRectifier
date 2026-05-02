@@ -93,6 +93,43 @@ HTML_PAGE = """<!DOCTYPE html>
             white-space: nowrap;
         }
 
+        .hero-meta {
+            display: grid;
+            gap: 12px;
+            min-width: min(420px, 100%);
+        }
+
+        .progress-shell {
+            display: grid;
+            gap: 8px;
+            min-width: min(420px, 100%);
+        }
+
+        .progress-copy {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: var(--muted);
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .progress-track {
+            height: 14px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: rgba(35, 75, 99, 0.12);
+            border: 1px solid rgba(35, 75, 99, 0.1);
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #b5542d 0%, #d5864d 100%);
+            transition: width 180ms ease;
+        }
+
         .workspace {
             display: grid;
             gap: 20px;
@@ -216,7 +253,18 @@ HTML_PAGE = """<!DOCTYPE html>
                 <h1>Document Rectifier</h1>
                 <p>Click the four document corners on the image. The rectified crop is generated with OpenCV and saved to a timestamped folder inside <code>out/</code>.</p>
             </div>
-            <div class="status" id="status">Waiting for image...</div>
+            <div class="hero-meta">
+                <div class="status" id="status">Waiting for image...</div>
+                <div class="progress-shell" aria-live="polite">
+                    <div class="progress-copy">
+                        <span id="progress-label">No images queued</span>
+                        <span id="progress-remaining">0 left</span>
+                    </div>
+                    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Image processing progress">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                </div>
+            </div>
         </section>
 
         <section class="workspace">
@@ -265,6 +313,10 @@ HTML_PAGE = """<!DOCTYPE html>
         const loupeCanvas = document.getElementById("loupe-canvas");
         const loupeContext = loupeCanvas.getContext("2d");
         const statusElement = document.getElementById("status");
+        const progressLabelElement = document.getElementById("progress-label");
+        const progressRemainingElement = document.getElementById("progress-remaining");
+        const progressTrackElement = document.querySelector(".progress-track");
+        const progressFillElement = document.getElementById("progress-fill");
         const imageNameElement = document.getElementById("image-name");
         const pointsElement = document.getElementById("points");
         const saveButton = document.getElementById("save");
@@ -397,6 +449,31 @@ HTML_PAGE = """<!DOCTYPE html>
             saveButton.disabled = points.length !== 4;
         }
 
+        function renderProgress(state) {
+            const totalImages = Number(state.totalImages || 0);
+            const completedImages = Number(state.completedImages || 0);
+            const currentImageNumber = Number(state.currentImageNumber || 0);
+            const imagesLeft = Number(state.imagesLeft || 0);
+
+            if (totalImages <= 0) {
+                progressLabelElement.textContent = "No images queued";
+                progressRemainingElement.textContent = "0 left";
+                progressFillElement.style.width = "0%";
+                progressTrackElement.setAttribute("aria-valuenow", "0");
+                return;
+            }
+
+            const percentComplete = Math.round((completedImages / totalImages) * 100);
+            if (state.hasImage && currentImageNumber > 0) {
+                progressLabelElement.textContent = `Image ${currentImageNumber} of ${totalImages}`;
+            } else {
+                progressLabelElement.textContent = `${completedImages} of ${totalImages} processed`;
+            }
+            progressRemainingElement.textContent = `${imagesLeft} left`;
+            progressFillElement.style.width = `${percentComplete}%`;
+            progressTrackElement.setAttribute("aria-valuenow", String(percentComplete));
+        }
+
         function draw() {
             if (!image.naturalWidth || !image.naturalHeight) {
                 return;
@@ -455,6 +532,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
 
             const state = await response.json();
+            renderProgress(state);
             if (!state.hasImage) {
                 currentVersion = null;
                 currentImageName = null;
@@ -609,6 +687,9 @@ class BrowserSelectionState:
     version: int = 0
     result: tuple[str, list[tuple[int, int]] | None] | None = None
     message: str = "Waiting for image..."
+    total_images: int = 0
+    completed_images: int = 0
+    current_image_number: int | None = None
 
 
 def order_points(points: np.ndarray) -> np.ndarray:
@@ -695,6 +776,10 @@ class BrowserSelectionServer:
                 "imageUrl": "/image",
                 "message": self.state.message,
                 "version": self.state.version,
+                "totalImages": self.state.total_images,
+                "completedImages": self.state.completed_images,
+                "currentImageNumber": self.state.current_image_number,
+                "imagesLeft": self.state.total_images - self.state.completed_images,
             }
 
         body = json.dumps(payload).encode("utf-8")
@@ -765,12 +850,22 @@ class BrowserSelectionServer:
         self.server.server_close()
         self.thread.join(timeout=5)
 
-    def select_points(self, image_path: Path) -> tuple[str, list[tuple[int, int]] | None]:
+    def select_points(
+        self,
+        image_path: Path,
+        *,
+        total_images: int,
+        completed_images: int,
+        current_image_number: int,
+    ) -> tuple[str, list[tuple[int, int]] | None]:
         with self.condition:
             self.state.image_path = image_path
             self.state.version += 1
             self.state.result = None
             self.state.message = f"Select corners for {image_path.name}"
+            self.state.total_images = total_images
+            self.state.completed_images = completed_images
+            self.state.current_image_number = current_image_number
             self.condition.notify_all()
 
             while self.state.result is None:
@@ -780,11 +875,22 @@ class BrowserSelectionServer:
             self.state.result = None
             return result
 
-    def set_idle_message(self, message: str) -> None:
+    def set_idle_message(
+        self,
+        message: str,
+        *,
+        total_images: int | None = None,
+        completed_images: int | None = None,
+    ) -> None:
         with self.condition:
             self.state.image_path = None
             self.state.message = message
             self.state.version += 1
+            if total_images is not None:
+                self.state.total_images = total_images
+            if completed_images is not None:
+                self.state.completed_images = completed_images
+            self.state.current_image_number = None
             self.condition.notify_all()
 
 
@@ -825,20 +931,32 @@ def process_images(root: Path) -> int:
         print(f"No JPG images found in {input_dir}", file=sys.stderr)
         return 1
 
+    total_images = len(images)
     output_dir: Path | None = None
     saved_count = 0
+    completed_images = 0
     selector = BrowserSelectionServer()
     selector.start()
-    selector.set_idle_message(f"Open {selector.url} if the browser did not launch automatically.")
+    selector.set_idle_message(
+        f"Open {selector.url} if the browser did not launch automatically.",
+        total_images=total_images,
+        completed_images=0,
+    )
     print(f"Open {selector.url} to select document corners.")
 
     try:
-        for image_path in images:
-            action, points = selector.select_points(image_path)
+        for image_index, image_path in enumerate(images, start=1):
+            action, points = selector.select_points(
+                image_path,
+                total_images=total_images,
+                completed_images=completed_images,
+                current_image_number=image_index,
+            )
             if action == "quit":
                 break
             if action == "skip":
                 print(f"Skipped {image_path.name}")
+                completed_images += 1
                 continue
 
             image = cv2.imread(str(image_path))
@@ -852,9 +970,14 @@ def process_images(root: Path) -> int:
             if not cv2.imwrite(str(output_path), rectified):
                 raise RuntimeError(f"Failed to write image: {output_path}")
             saved_count += 1
+            completed_images += 1
             print(f"Saved {output_path}")
     finally:
-        selector.set_idle_message("Processing finished. You can close this browser tab.")
+        selector.set_idle_message(
+            "Processing finished. You can close this browser tab.",
+            total_images=total_images,
+            completed_images=completed_images,
+        )
         selector.stop()
 
     if saved_count == 0:
