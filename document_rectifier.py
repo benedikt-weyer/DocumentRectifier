@@ -286,10 +286,20 @@ HTML_PAGE = """<!DOCTYPE html>
             points.forEach((point, index) => {
                 const scaledX = point.x * scale;
                 const scaledY = point.y * scale;
-                context.fillStyle = "#ffcc66";
+                context.save();
+                context.strokeStyle = "#ffcc66";
+                context.lineWidth = 2;
                 context.beginPath();
-                context.arc(scaledX, scaledY, 8, 0, Math.PI * 2);
-                context.fill();
+                context.moveTo(scaledX - 12, scaledY);
+                context.lineTo(scaledX + 12, scaledY);
+                context.moveTo(scaledX, scaledY - 12);
+                context.lineTo(scaledX, scaledY + 12);
+                context.stroke();
+
+                context.beginPath();
+                context.arc(scaledX, scaledY, 4, 0, Math.PI * 2);
+                context.stroke();
+                context.restore();
                 context.fillStyle = "#1f2933";
                 context.font = "bold 18px IBM Plex Sans, sans-serif";
                 context.fillText(String(index + 1), scaledX + 12, scaledY - 12);
