@@ -126,10 +126,34 @@ HTML_PAGE = """<!DOCTYPE html>
             min-height: 400px;
         }
 
-        canvas {
+        #canvas {
             max-width: 100%;
             height: auto;
             cursor: crosshair;
+        }
+
+        .loupe {
+            position: fixed;
+            width: 180px;
+            height: 180px;
+            border-radius: 20px;
+            overflow: hidden;
+            border: 2px solid rgba(181, 84, 45, 0.9);
+            background: rgba(255, 250, 241, 0.94);
+            box-shadow: 0 24px 48px rgba(31, 41, 51, 0.22);
+            pointer-events: none;
+            display: none;
+            z-index: 1000;
+        }
+
+        .loupe.visible {
+            display: block;
+        }
+
+        #loupe-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
         }
 
         .image-name {
@@ -208,6 +232,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     <strong>Controls</strong>
                     <ol>
                         <li>Click four corners of the document in any order.</li>
+                        <li>Drag any placed corner to refine it with the loupe.</li>
                         <li>Use Reset if you want to start over.</li>
                         <li>Save writes the rectified crop and advances to the next image.</li>
                         <li>Skip leaves the current image untouched. Quit stops the session.</li>
@@ -229,22 +254,136 @@ HTML_PAGE = """<!DOCTYPE html>
         </section>
     </main>
 
+    <div class="loupe" id="loupe" aria-hidden="true">
+        <canvas id="loupe-canvas" width="180" height="180"></canvas>
+    </div>
+
     <script>
         const canvas = document.getElementById("canvas");
         const context = canvas.getContext("2d");
+        const loupeElement = document.getElementById("loupe");
+        const loupeCanvas = document.getElementById("loupe-canvas");
+        const loupeContext = loupeCanvas.getContext("2d");
         const statusElement = document.getElementById("status");
         const imageNameElement = document.getElementById("image-name");
         const pointsElement = document.getElementById("points");
         const saveButton = document.getElementById("save");
         const image = new Image();
 
+        const HANDLE_RADIUS = 12;
+        const HANDLE_HIT_PADDING = 10;
+        const LOUPE_ZOOM = 4;
+        const LOUPE_OFFSET_X = 24;
+        const LOUPE_OFFSET_Y = 24;
+
         let currentVersion = null;
         let currentImageName = null;
         let scale = 1;
         let points = [];
+        let dragIndex = null;
+        let activePointerId = null;
 
         function setStatus(text) {
             statusElement.textContent = text;
+        }
+
+        function clamp(value, minimum, maximum) {
+            return Math.min(Math.max(value, minimum), maximum);
+        }
+
+        function hideLoupe() {
+            loupeElement.classList.remove("visible");
+        }
+
+        function positionLoupe(clientX, clientY) {
+            const left = clamp(
+                clientX + LOUPE_OFFSET_X,
+                12,
+                window.innerWidth - loupeElement.offsetWidth - 12,
+            );
+            const top = clamp(
+                clientY - loupeElement.offsetHeight - LOUPE_OFFSET_Y,
+                12,
+                window.innerHeight - loupeElement.offsetHeight - 12,
+            );
+            loupeElement.style.left = `${left}px`;
+            loupeElement.style.top = `${top}px`;
+        }
+
+        function drawLoupe(point, clientX, clientY) {
+            if (!image.naturalWidth || !image.naturalHeight) {
+                return;
+            }
+
+            const sourceSize = loupeCanvas.width / LOUPE_ZOOM;
+            const maxSourceX = Math.max(image.naturalWidth - sourceSize, 0);
+            const maxSourceY = Math.max(image.naturalHeight - sourceSize, 0);
+            const sourceX = clamp(point.x - sourceSize / 2, 0, maxSourceX);
+            const sourceY = clamp(point.y - sourceSize / 2, 0, maxSourceY);
+
+            loupeContext.clearRect(0, 0, loupeCanvas.width, loupeCanvas.height);
+            loupeContext.imageSmoothingEnabled = false;
+            loupeContext.drawImage(
+                image,
+                sourceX,
+                sourceY,
+                sourceSize,
+                sourceSize,
+                0,
+                0,
+                loupeCanvas.width,
+                loupeCanvas.height,
+            );
+
+            loupeContext.save();
+            loupeContext.strokeStyle = "rgba(181, 84, 45, 0.95)";
+            loupeContext.lineWidth = 2;
+            loupeContext.beginPath();
+            loupeContext.moveTo(loupeCanvas.width / 2, 0);
+            loupeContext.lineTo(loupeCanvas.width / 2, loupeCanvas.height);
+            loupeContext.moveTo(0, loupeCanvas.height / 2);
+            loupeContext.lineTo(loupeCanvas.width, loupeCanvas.height / 2);
+            loupeContext.stroke();
+            loupeContext.restore();
+
+            positionLoupe(clientX, clientY);
+            loupeElement.classList.add("visible");
+        }
+
+        function getCanvasPoint(event) {
+            const bounds = canvas.getBoundingClientRect();
+            return {
+                x: clamp(
+                    Math.round((event.clientX - bounds.left) / scale),
+                    0,
+                    Math.max(image.naturalWidth - 1, 0),
+                ),
+                y: clamp(
+                    Math.round((event.clientY - bounds.top) / scale),
+                    0,
+                    Math.max(image.naturalHeight - 1, 0),
+                ),
+            };
+        }
+
+        function getPointHitIndex(targetPoint) {
+            const hitRadius = (HANDLE_RADIUS + HANDLE_HIT_PADDING) / Math.max(scale, 0.001);
+            return points.findIndex((point) => Math.hypot(point.x - targetPoint.x, point.y - targetPoint.y) <= hitRadius);
+        }
+
+        function updateCanvasCursor(event) {
+            if (!image.naturalWidth || dragIndex !== null) {
+                canvas.style.cursor = dragIndex !== null ? "grabbing" : "crosshair";
+                return;
+            }
+
+            const point = getCanvasPoint(event);
+            if (getPointHitIndex(point) !== -1) {
+                canvas.style.cursor = "grab";
+                return;
+            }
+
+            canvas.style.cursor = points.length < 4 ? "crosshair" : "default";
         }
 
         function renderPoints() {
@@ -287,8 +426,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 const scaledX = point.x * scale;
                 const scaledY = point.y * scale;
                 context.save();
-                context.strokeStyle = "#ffcc66";
-                context.lineWidth = 2;
+                context.strokeStyle = dragIndex === index ? "#b5542d" : "#ffcc66";
+                context.lineWidth = dragIndex === index ? 3 : 2;
                 context.beginPath();
                 context.moveTo(scaledX - 12, scaledY);
                 context.lineTo(scaledX + 12, scaledY);
@@ -317,6 +456,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 currentVersion = null;
                 currentImageName = null;
                 points = [];
+                dragIndex = null;
+                activePointerId = null;
+                hideLoupe();
                 renderPoints();
                 imageNameElement.textContent = state.message;
                 setStatus(state.message);
@@ -328,6 +470,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 currentVersion = state.version;
                 currentImageName = state.imageName;
                 points = [];
+                dragIndex = null;
+                activePointerId = null;
+                hideLoupe();
                 renderPoints();
                 imageNameElement.textContent = state.imageName;
                 setStatus(`Select corners for ${state.imageName}`);
@@ -358,20 +503,79 @@ HTML_PAGE = """<!DOCTYPE html>
             setStatus(action === "save" ? "Saved. Waiting for next image..." : "Advancing...");
         }
 
-        canvas.addEventListener("click", (event) => {
-            if (!image.naturalWidth || points.length >= 4) {
+        canvas.addEventListener("pointerdown", (event) => {
+            if (!image.naturalWidth) {
                 return;
             }
-            const bounds = canvas.getBoundingClientRect();
-            const x = Math.round((event.clientX - bounds.left) / scale);
-            const y = Math.round((event.clientY - bounds.top) / scale);
-            points.push({ x, y });
+
+            const point = getCanvasPoint(event);
+            const hitIndex = getPointHitIndex(point);
+
+            if (hitIndex !== -1) {
+                dragIndex = hitIndex;
+                activePointerId = event.pointerId;
+                canvas.setPointerCapture(event.pointerId);
+                canvas.style.cursor = "grabbing";
+                points[dragIndex] = point;
+                renderPoints();
+                draw();
+                drawLoupe(point, event.clientX, event.clientY);
+                return;
+            }
+
+            if (points.length >= 4) {
+                return;
+            }
+
+            points.push(point);
             renderPoints();
             draw();
         });
 
+        canvas.addEventListener("pointermove", (event) => {
+            if (dragIndex === null || activePointerId !== event.pointerId) {
+                updateCanvasCursor(event);
+                return;
+            }
+
+            const point = getCanvasPoint(event);
+            points[dragIndex] = point;
+            renderPoints();
+            draw();
+            drawLoupe(point, event.clientX, event.clientY);
+        });
+
+        function finishDrag(event) {
+            if (dragIndex === null || activePointerId !== event.pointerId) {
+                return;
+            }
+
+            if (canvas.hasPointerCapture(event.pointerId)) {
+                canvas.releasePointerCapture(event.pointerId);
+            }
+            dragIndex = null;
+            activePointerId = null;
+            hideLoupe();
+            updateCanvasCursor(event);
+            renderPoints();
+            draw();
+        }
+
+        canvas.addEventListener("pointerup", finishDrag);
+        canvas.addEventListener("pointercancel", finishDrag);
+        canvas.addEventListener("pointerleave", (event) => {
+            if (dragIndex === null) {
+                canvas.style.cursor = points.length < 4 ? "crosshair" : "default";
+            } else {
+                drawLoupe(points[dragIndex], event.clientX, event.clientY);
+            }
+        });
+
         document.getElementById("reset").addEventListener("click", () => {
             points = [];
+            dragIndex = null;
+            activePointerId = null;
+            hideLoupe();
             renderPoints();
             draw();
             setStatus(currentImageName ? `Reset points for ${currentImageName}` : "Waiting for image...");
@@ -379,7 +583,10 @@ HTML_PAGE = """<!DOCTYPE html>
         document.getElementById("save").addEventListener("click", () => submit("save"));
         document.getElementById("skip").addEventListener("click", () => submit("skip"));
         document.getElementById("quit").addEventListener("click", () => submit("quit"));
-        window.addEventListener("resize", draw);
+        window.addEventListener("resize", () => {
+            draw();
+            hideLoupe();
+        });
         image.addEventListener("load", draw);
 
         renderPoints();
