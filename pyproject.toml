@@ -17,7 +17,10 @@ requires = ["setuptools>=80.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["document_rectifier"]
+packages = ["document_rectifier"]
+
+[tool.setuptools.package-data]
+document_rectifier = ["static/*.html", "static/*.css", "static/*.js"]
 
 [tool.uv]
 package = true
