@@ -5,4 +5,7 @@
 in/
 out/
 
+in-for-aspect-ratio/
+out-for-aspect-ratio/
+
 __pycache__/

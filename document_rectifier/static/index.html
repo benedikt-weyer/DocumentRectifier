@@ -11,7 +11,7 @@
         <section class="panel hero">
             <div>
                 <h1>Document Rectifier</h1>
-                <p>Click the four document corners on the image. The rectified crop is generated with OpenCV and saved to a timestamped folder inside <code>out/</code>.</p>
+                <p>Choose between manual document rectification from <code>in/</code> and aspect-ratio cropping from <code>in-for-aspect-ratio/</code>. The aspect-ratio workflow saves to a timestamped folder inside <code>out-for-aspect-ratio/</code>.</p>
             </div>
             <div class="hero-meta">
                 <div class="status" id="status">Waiting for image...</div>
@@ -25,7 +25,18 @@
             </div>
         </section>
 
-        <section class="workspace">
+        <section class="panel mode-picker hidden" id="mode-picker">
+            <div class="mode-copy">
+                <strong>Workflow</strong>
+                <p>Pick the processing mode for this session.</p>
+            </div>
+            <div class="mode-actions">
+                <button class="primary" id="choose-document" type="button">Document Rectifier</button>
+                <button class="secondary" id="choose-aspect-ratio" type="button">Aspect Ratio Cropper</button>
+            </div>
+        </section>
+
+        <section class="workspace hidden" id="workspace">
             <div class="panel viewer">
                 <div class="image-name" id="image-name">No image loaded</div>
                 <div class="canvas-wrap">
@@ -34,7 +45,7 @@
             </div>
 
             <aside class="panel sidebar">
-                <section>
+                <section id="document-guide">
                     <strong>Controls</strong>
                     <ol>
                         <li>Click four corners of the document in any order.</li>
@@ -45,17 +56,57 @@
                     </ol>
                 </section>
 
-                <section>
+                <section class="hidden" id="aspect-guide">
+                    <strong>Aspect Crop</strong>
+                    <ol>
+                        <li>Edit the ratio list in the browser if you want a different target set.</li>
+                        <li>The closest listed ratio is chosen automatically for each image.</li>
+                        <li>Use Shift to slide the crop left or right, or top or bottom, depending on the image.</li>
+                        <li>Use Margin to trim a small percentage from all sides before the aspect crop is chosen.</li>
+                        <li>Save writes the cropped image, Skip leaves it untouched, and Quit stops the session.</li>
+                    </ol>
+                </section>
+
+                <section id="points-section">
                     <strong>Selected points</strong>
                     <div class="points" id="points"></div>
                 </section>
 
-                <section class="actions">
-                    <button class="secondary wide" id="auto-detect">Auto Detect Corners</button>
-                    <button class="primary" id="save" disabled>Save Crop</button>
-                    <button class="secondary" id="reset">Reset</button>
-                    <button id="skip">Skip</button>
-                    <button class="warn" id="quit">Quit</button>
+                <section class="hidden" id="aspect-controls">
+                    <strong>Aspect Ratios</strong>
+                    <label class="field" for="aspect-ratios">
+                        <span>Comma or newline separated ratios</span>
+                        <textarea id="aspect-ratios" rows="3" spellcheck="false"></textarea>
+                    </label>
+                    <div class="summary" id="selected-ratio">Enter ratios like 1:1, 4:5, 16:9.</div>
+
+                    <label class="field" for="shift-control">
+                        <span id="shift-label">Shift crop</span>
+                        <input id="shift-control" type="range" min="0" max="100" value="50">
+                        <div class="field-meta">
+                            <span id="shift-start">Left</span>
+                            <strong id="shift-value">50%</strong>
+                            <span id="shift-end">Right</span>
+                        </div>
+                    </label>
+
+                    <label class="field" for="margin-control">
+                        <span>Margin on all sides</span>
+                        <input id="margin-control" type="range" min="0" max="15" step="0.5" value="0">
+                        <div class="field-meta">
+                            <span>0%</span>
+                            <strong id="margin-value">0%</strong>
+                            <span>15%</span>
+                        </div>
+                    </label>
+                </section>
+
+                <section class="actions hidden" id="actions">
+                    <button class="secondary wide" id="auto-detect" type="button">Auto Detect Corners</button>
+                    <button class="primary" id="save" disabled type="button">Save Crop</button>
+                    <button class="secondary" id="reset" type="button">Reset</button>
+                    <button id="skip" type="button">Skip</button>
+                    <button class="warn" id="quit" type="button">Quit</button>
                 </section>
             </aside>
         </section>
