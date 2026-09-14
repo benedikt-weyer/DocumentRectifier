@@ -19,6 +19,7 @@ const pointsElement = document.getElementById("points");
 const aspectControlsElement = document.getElementById("aspect-controls");
 const aspectRatiosInput = document.getElementById("aspect-ratios");
 const selectedRatioElement = document.getElementById("selected-ratio");
+const ratioOptionsElement = document.getElementById("ratio-options");
 const zoomControl = document.getElementById("zoom-control");
 const zoomValueElement = document.getElementById("zoom-value");
 const marginControl = document.getElementById("margin-control");
@@ -61,6 +62,7 @@ let activePointerId = null;
 let dragOriginPoint = null;
 let dragOriginClient = null;
 let aspectRatioDefinitions = [];
+let selectedRatioLabel = null;
 let marginPercent = 0;
 let zoomPercent = 100;
 let cropCenterX = null;
@@ -300,6 +302,13 @@ function chooseClosestAspectRatio(definitions, width, height, margin) {
     }, null);
 }
 
+function resolveActiveRatio(definitions, width, height, margin) {
+    const overridden = selectedRatioLabel !== null
+        ? definitions.find((definition) => definition.label === selectedRatioLabel)
+        : undefined;
+    return overridden ?? chooseClosestAspectRatio(definitions, width, height, margin);
+}
+
 function computeMaxCropSize(inner, targetRatio) {
     const imageRatio = inner.width / inner.height;
     if (imageRatio > targetRatio) {
@@ -359,7 +368,7 @@ function getAspectCropState() {
         return null;
     }
 
-    const selectedRatio = chooseClosestAspectRatio(
+    const selectedRatio = resolveActiveRatio(
         aspectRatioDefinitions,
         image.naturalWidth,
         image.naturalHeight,
@@ -425,6 +434,8 @@ function renderAspectControls() {
         return;
     }
 
+    renderRatioOptions();
+
     const cropState = getAspectCropState();
     if (aspectRatioDefinitions.length === 0) {
         selectedRatioElement.textContent = "Enter one or more ratios like 1:1, 4:5, 16:9.";
@@ -441,9 +452,35 @@ function renderAspectControls() {
     }
 
     zoomControl.disabled = false;
-    selectedRatioElement.textContent = `Closest ratio: ${cropState.ratio.label} — drag the cutout to reposition it.`;
+    const isOverride = aspectRatioDefinitions.some((definition) => definition.label === selectedRatioLabel);
+    selectedRatioElement.textContent = isOverride
+        ? `Using ${cropState.ratio.label} for this image — drag the cutout to reposition it.`
+        : `Closest ratio: ${cropState.ratio.label} — drag the cutout to reposition it.`;
 
     syncActionState();
+}
+
+function renderRatioOptions() {
+    if (aspectRatioDefinitions.length === 0) {
+        ratioOptionsElement.innerHTML = "";
+        setHidden(ratioOptionsElement, true);
+        return;
+    }
+
+    const activeLabel = aspectRatioDefinitions.some((definition) => definition.label === selectedRatioLabel)
+        ? selectedRatioLabel
+        : null;
+
+    const autoChip = `<button type="button" class="ratio-chip${activeLabel === null ? " active" : ""}" data-ratio-label="">Auto</button>`;
+    const chips = aspectRatioDefinitions
+        .map((definition) => {
+            const isActive = activeLabel === definition.label;
+            return `<button type="button" class="ratio-chip${isActive ? " active" : ""}" data-ratio-label="${definition.label}">${definition.label}</button>`;
+        })
+        .join("");
+
+    ratioOptionsElement.innerHTML = autoChip + chips;
+    setHidden(ratioOptionsElement, false);
 }
 
 function setRotationDegrees(value) {
@@ -703,6 +740,7 @@ async function fetchState() {
         rotationDegrees = 0;
         cropCenterX = null;
         cropCenterY = null;
+        selectedRatioLabel = null;
         hideLoupe();
         renderModePicker(state.availableModes || []);
         imageNameElement.textContent = "Choose a workflow";
@@ -722,6 +760,7 @@ async function fetchState() {
         rotationDegrees = 0;
         cropCenterX = null;
         cropCenterY = null;
+        selectedRatioLabel = null;
         hideLoupe();
         renderPoints();
         renderAspectControls();
@@ -755,6 +794,7 @@ async function fetchState() {
             marginPercent = 0;
             cropCenterX = null;
             cropCenterY = null;
+            selectedRatioLabel = null;
             zoomControl.value = "100";
             marginControl.value = "0";
             setRotationDegrees(0);
@@ -1050,6 +1090,7 @@ resetButton.addEventListener("click", () => {
         marginPercent = 0;
         cropCenterX = null;
         cropCenterY = null;
+        selectedRatioLabel = null;
         zoomControl.value = "100";
         marginControl.value = "0";
         setRotationDegrees(0);
@@ -1105,6 +1146,18 @@ autoDetectButton.addEventListener("click", autoDetectCorners);
 
 aspectRatiosInput.addEventListener("input", () => {
     aspectRatioDefinitions = parseAspectRatios(aspectRatiosInput.value);
+    renderAspectControls();
+    draw();
+});
+
+ratioOptionsElement.addEventListener("click", (event) => {
+    const target = event.target.closest("button[data-ratio-label]");
+    if (!target) {
+        return;
+    }
+
+    const label = target.getAttribute("data-ratio-label");
+    selectedRatioLabel = label === "" ? null : label;
     renderAspectControls();
     draw();
 });

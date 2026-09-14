@@ -78,7 +78,7 @@
                     <strong>Aspect Crop</strong>
                     <ol>
                         <li>Edit the ratio list in the browser if you want a different target set.</li>
-                        <li>The closest listed ratio is chosen automatically for each image.</li>
+                        <li>The closest listed ratio is chosen automatically for each image, or pick one yourself below — it only applies to this image.</li>
                         <li>Drag the Straighten dial above the image to rotate it a few degrees without moving the crop.</li>
                         <li>Drag the highlighted cutout on the image directly to reposition it.</li>
                         <li>Use Zoom to shrink the cutout so it can be moved further, or dragged closer in.</li>
@@ -99,6 +99,7 @@
                         <textarea id="aspect-ratios" rows="3" spellcheck="false"></textarea>
                     </label>
                     <div class="summary" id="selected-ratio">Enter ratios like 1:1, 4:5, 16:9.</div>
+                    <div class="ratio-options hidden" id="ratio-options"></div>
 
                     <label class="field" for="zoom-control">
                         <span>Zoom</span>
