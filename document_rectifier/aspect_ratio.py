@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 ROTATE_MAX_DEGREES = 10.0
 ZOOM_MIN_PERCENT = 100.0
@@ -162,7 +162,13 @@ def crop_image_to_aspect(
     output_path: Path,
     selection: AspectRatioCropSelection,
 ) -> None:
-    with Image.open(image_path) as image:
+    with Image.open(image_path) as raw_image:
+        # Camera JPEGs are often stored in sensor orientation with an EXIF
+        # Orientation tag describing the rotation needed to display them
+        # upright; browsers (and the crop coordinates sent from one) already
+        # work in that upright space, so bake the rotation into the pixels
+        # here before doing any size- or position-based math.
+        image = ImageOps.exif_transpose(raw_image)
         crop_box = compute_crop_box(image.width, image.height, selection)
         rotation_degrees = max(
             min(selection.rotation_degrees, ROTATE_MAX_DEGREES),
