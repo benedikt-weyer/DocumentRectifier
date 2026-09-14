@@ -256,9 +256,13 @@ class BrowserSelectionServer:
         try:
             ratio_width = float(body.get("ratioWidth"))
             ratio_height = float(body.get("ratioHeight"))
-            shift_percent = float(body.get("shiftPercent"))
             margin_percent = float(body.get("marginPercent"))
+            zoom_percent = float(body.get("zoomPercent", 100.0))
             rotation_degrees = float(body.get("rotationDegrees", 0.0))
+            raw_center_x = body.get("cropCenterX")
+            raw_center_y = body.get("cropCenterY")
+            crop_center_x = float(raw_center_x) if raw_center_x is not None else None
+            crop_center_y = float(raw_center_y) if raw_center_y is not None else None
         except (TypeError, ValueError):
             handler.send_error(HTTPStatus.BAD_REQUEST, "Invalid aspect ratio crop payload")
             return None
@@ -272,8 +276,10 @@ class BrowserSelectionServer:
 
         selection = AspectRatioCropSelection(
             ratio=AspectRatioDefinition(ratio_label.strip(), ratio_width, ratio_height),
-            shift_percent=shift_percent,
             margin_percent=margin_percent,
+            zoom_percent=zoom_percent,
+            crop_center_x=crop_center_x,
+            crop_center_y=crop_center_y,
             rotation_degrees=rotation_degrees,
         )
         return {"kind": "aspect-ratio", "action": action, "selection": selection}

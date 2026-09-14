@@ -19,11 +19,8 @@ const pointsElement = document.getElementById("points");
 const aspectControlsElement = document.getElementById("aspect-controls");
 const aspectRatiosInput = document.getElementById("aspect-ratios");
 const selectedRatioElement = document.getElementById("selected-ratio");
-const shiftControl = document.getElementById("shift-control");
-const shiftLabelElement = document.getElementById("shift-label");
-const shiftValueElement = document.getElementById("shift-value");
-const shiftStartElement = document.getElementById("shift-start");
-const shiftEndElement = document.getElementById("shift-end");
+const zoomControl = document.getElementById("zoom-control");
+const zoomValueElement = document.getElementById("zoom-value");
 const marginControl = document.getElementById("margin-control");
 const marginValueElement = document.getElementById("margin-value");
 const rotateDialElement = document.getElementById("rotate-dial");
@@ -50,6 +47,8 @@ const LOUPE_OFFSET_Y = 24;
 const DRAG_DAMPING = 0.35;
 const ROTATE_MAX_DEGREES = 10;
 const ROTATE_PIXELS_PER_DEGREE = 8;
+const ZOOM_MIN_PERCENT = 100;
+const ZOOM_MAX_PERCENT = 300;
 
 let currentScreen = "idle";
 let currentWorkflowMode = null;
@@ -62,8 +61,14 @@ let activePointerId = null;
 let dragOriginPoint = null;
 let dragOriginClient = null;
 let aspectRatioDefinitions = [];
-let shiftPercent = 50;
 let marginPercent = 0;
+let zoomPercent = 100;
+let cropCenterX = null;
+let cropCenterY = null;
+let aspectDragActive = false;
+let aspectDragPointerId = null;
+let aspectDragOriginCenter = null;
+let aspectDragOriginClient = null;
 let rotationDegrees = 0;
 let dialDragOriginAngle = null;
 let dialDragOriginClientX = null;
@@ -190,9 +195,29 @@ function beginDrag(index, event) {
     drawLoupe(points[dragIndex], event.clientX, event.clientY);
 }
 
+function isPointInCropRect(point, cropState) {
+    return (
+        point.x >= cropState.left
+        && point.x <= cropState.right
+        && point.y >= cropState.top
+        && point.y <= cropState.bottom
+    );
+}
+
 function updateCanvasCursor(event) {
     if (!image.naturalWidth) {
         canvas.style.cursor = "crosshair";
+        return;
+    }
+
+    if (currentWorkflowMode === ASPECT_RATIO_MODE) {
+        if (aspectDragActive) {
+            canvas.style.cursor = "grabbing";
+            return;
+        }
+        const cropState = getAspectCropState();
+        const point = getCanvasPoint(event);
+        canvas.style.cursor = cropState !== null && isPointInCropRect(point, cropState) ? "grab" : "default";
         return;
     }
 
@@ -275,39 +300,56 @@ function chooseClosestAspectRatio(definitions, width, height, margin) {
     }, null);
 }
 
-function computeAspectCropRect(width, height, ratioDefinition, shift, margin) {
-    const inner = computeInnerBounds(width, height, margin);
-    const targetRatio = ratioDefinition.value;
+function computeMaxCropSize(inner, targetRatio) {
     const imageRatio = inner.width / inner.height;
-    const shiftFactor = clamp(shift, 0, 100) / 100;
-
-    let left = inner.left;
-    let top = inner.top;
-    let right = inner.right;
-    let bottom = inner.bottom;
-    let axis = "none";
-
     if (imageRatio > targetRatio) {
-        const cropWidth = inner.height * targetRatio;
-        const slackX = Math.max(inner.width - cropWidth, 0);
-        left = inner.left + (slackX * shiftFactor);
-        right = left + cropWidth;
-        axis = "x";
-    } else if (imageRatio < targetRatio) {
-        const cropHeight = inner.width / targetRatio;
-        const slackY = Math.max(inner.height - cropHeight, 0);
-        top = inner.top + (slackY * shiftFactor);
-        bottom = top + cropHeight;
-        axis = "y";
+        return { width: inner.height * targetRatio, height: inner.height };
     }
+    return { width: inner.width, height: inner.width / targetRatio };
+}
+
+function clampCenter(value, innerMin, innerMax, cropSize) {
+    const low = innerMin + (cropSize / 2);
+    const high = innerMax - (cropSize / 2);
+    if (low > high) {
+        return (innerMin + innerMax) / 2;
+    }
+    return clamp(value, low, high);
+}
+
+function computeAspectCropRect(width, height, ratioDefinition, zoom, margin, centerX, centerY) {
+    const inner = computeInnerBounds(width, height, margin);
+    const maxCrop = computeMaxCropSize(inner, ratioDefinition.value);
+    const zoomScale = ZOOM_MIN_PERCENT / clamp(zoom, ZOOM_MIN_PERCENT, ZOOM_MAX_PERCENT);
+    const cropWidth = Math.max(maxCrop.width * zoomScale, 1);
+    const cropHeight = Math.max(maxCrop.height * zoomScale, 1);
+
+    const defaultCenterX = inner.left + (inner.width / 2);
+    const defaultCenterY = inner.top + (inner.height / 2);
+    const resolvedCenterX = clampCenter(
+        centerX === null ? defaultCenterX : centerX,
+        inner.left,
+        inner.right,
+        cropWidth,
+    );
+    const resolvedCenterY = clampCenter(
+        centerY === null ? defaultCenterY : centerY,
+        inner.top,
+        inner.bottom,
+        cropHeight,
+    );
+
+    const left = resolvedCenterX - (cropWidth / 2);
+    const top = resolvedCenterY - (cropHeight / 2);
 
     return {
         ratio: ratioDefinition,
-        axis,
         left,
         top,
-        right,
-        bottom,
+        right: left + cropWidth,
+        bottom: top + cropHeight,
+        centerX: resolvedCenterX,
+        centerY: resolvedCenterY,
         inner,
     };
 }
@@ -331,8 +373,10 @@ function getAspectCropState() {
         image.naturalWidth,
         image.naturalHeight,
         selectedRatio,
-        shiftPercent,
+        zoomPercent,
         marginPercent,
+        cropCenterX,
+        cropCenterY,
     );
 }
 
@@ -371,9 +415,9 @@ function renderPoints() {
 }
 
 function renderAspectControls() {
-    shiftPercent = Number(shiftControl.value);
+    zoomPercent = Number(zoomControl.value);
     marginPercent = Number(marginControl.value);
-    shiftValueElement.textContent = `${formatPercent(shiftPercent)}%`;
+    zoomValueElement.textContent = `${(zoomPercent / 100).toFixed(1)}x`;
     marginValueElement.textContent = `${formatPercent(marginPercent)}%`;
 
     if (currentWorkflowMode !== ASPECT_RATIO_MODE) {
@@ -384,38 +428,20 @@ function renderAspectControls() {
     const cropState = getAspectCropState();
     if (aspectRatioDefinitions.length === 0) {
         selectedRatioElement.textContent = "Enter one or more ratios like 1:1, 4:5, 16:9.";
-        shiftLabelElement.textContent = "Shift crop";
-        shiftStartElement.textContent = "Left";
-        shiftEndElement.textContent = "Right";
-        shiftControl.disabled = true;
+        zoomControl.disabled = true;
         syncActionState();
         return;
     }
 
     if (cropState === null) {
         selectedRatioElement.textContent = "Load an image to preview the closest ratio.";
-        shiftControl.disabled = true;
+        zoomControl.disabled = true;
         syncActionState();
         return;
     }
 
-    selectedRatioElement.textContent = `Closest ratio: ${cropState.ratio.label}`;
-    if (cropState.axis === "x") {
-        shiftLabelElement.textContent = "Shift crop horizontally";
-        shiftStartElement.textContent = "Left";
-        shiftEndElement.textContent = "Right";
-        shiftControl.disabled = false;
-    } else if (cropState.axis === "y") {
-        shiftLabelElement.textContent = "Shift crop vertically";
-        shiftStartElement.textContent = "Top";
-        shiftEndElement.textContent = "Bottom";
-        shiftControl.disabled = false;
-    } else {
-        shiftLabelElement.textContent = "Shift crop";
-        shiftStartElement.textContent = "Centered";
-        shiftEndElement.textContent = "Centered";
-        shiftControl.disabled = true;
-    }
+    zoomControl.disabled = false;
+    selectedRatioElement.textContent = `Closest ratio: ${cropState.ratio.label} — drag the cutout to reposition it.`;
 
     syncActionState();
 }
@@ -675,6 +701,8 @@ async function fetchState() {
         dragIndex = null;
         activePointerId = null;
         rotationDegrees = 0;
+        cropCenterX = null;
+        cropCenterY = null;
         hideLoupe();
         renderModePicker(state.availableModes || []);
         imageNameElement.textContent = "Choose a workflow";
@@ -692,6 +720,8 @@ async function fetchState() {
         dragIndex = null;
         activePointerId = null;
         rotationDegrees = 0;
+        cropCenterX = null;
+        cropCenterY = null;
         hideLoupe();
         renderPoints();
         renderAspectControls();
@@ -721,9 +751,11 @@ async function fetchState() {
                 aspectRatiosInput.value = (state.defaultAspectRatios || []).join(", ");
                 aspectRatioDefinitions = parseAspectRatios(aspectRatiosInput.value);
             }
-            shiftPercent = 50;
+            zoomPercent = 100;
             marginPercent = 0;
-            shiftControl.value = "50";
+            cropCenterX = null;
+            cropCenterY = null;
+            zoomControl.value = "100";
             marginControl.value = "0";
             setRotationDegrees(0);
             setStatus(`Adjust crop for ${state.imageName}`);
@@ -809,8 +841,10 @@ async function submit(action) {
                 ratioLabel: cropState.ratio.label,
                 ratioWidth: cropState.ratio.width,
                 ratioHeight: cropState.ratio.height,
-                shiftPercent,
                 marginPercent,
+                zoomPercent,
+                cropCenterX: cropState.centerX,
+                cropCenterY: cropState.centerY,
                 rotationDegrees,
             };
         }
@@ -836,8 +870,48 @@ async function submit(action) {
     setStatus(action === "save" ? "Saved. Waiting for next image..." : "Advancing...");
 }
 
+function beginAspectDrag(cropState, event) {
+    aspectDragActive = true;
+    aspectDragPointerId = event.pointerId;
+    aspectDragOriginCenter = { x: cropState.centerX, y: cropState.centerY };
+    aspectDragOriginClient = { x: event.clientX, y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+    canvas.style.cursor = "grabbing";
+}
+
+function finishAspectDrag(event) {
+    if (!aspectDragActive || aspectDragPointerId !== event.pointerId) {
+        return;
+    }
+
+    if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+    }
+    aspectDragActive = false;
+    aspectDragPointerId = null;
+    aspectDragOriginCenter = null;
+    aspectDragOriginClient = null;
+    updateCanvasCursor(event);
+}
+
 canvas.addEventListener("pointerdown", (event) => {
-    if (currentWorkflowMode !== DOCUMENT_MODE || !image.naturalWidth) {
+    if (!image.naturalWidth) {
+        return;
+    }
+
+    if (currentWorkflowMode === ASPECT_RATIO_MODE) {
+        const cropState = getAspectCropState();
+        if (cropState === null) {
+            return;
+        }
+        const point = getCanvasPoint(event);
+        if (isPointInCropRect(point, cropState)) {
+            beginAspectDrag(cropState, event);
+        }
+        return;
+    }
+
+    if (currentWorkflowMode !== DOCUMENT_MODE) {
         return;
     }
 
@@ -858,6 +932,20 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+    if (currentWorkflowMode === ASPECT_RATIO_MODE) {
+        if (!aspectDragActive || aspectDragPointerId !== event.pointerId) {
+            updateCanvasCursor(event);
+            return;
+        }
+
+        const deltaX = (event.clientX - aspectDragOriginClient.x) / Math.max(scale, 0.001);
+        const deltaY = (event.clientY - aspectDragOriginClient.y) / Math.max(scale, 0.001);
+        cropCenterX = aspectDragOriginCenter.x + deltaX;
+        cropCenterY = aspectDragOriginCenter.y + deltaY;
+        draw();
+        return;
+    }
+
     if (currentWorkflowMode !== DOCUMENT_MODE) {
         canvas.style.cursor = image.naturalWidth ? "default" : "crosshair";
         return;
@@ -903,8 +991,14 @@ function finishDrag(event) {
     draw();
 }
 
-canvas.addEventListener("pointerup", finishDrag);
-canvas.addEventListener("pointercancel", finishDrag);
+canvas.addEventListener("pointerup", (event) => {
+    finishDrag(event);
+    finishAspectDrag(event);
+});
+canvas.addEventListener("pointercancel", (event) => {
+    finishDrag(event);
+    finishAspectDrag(event);
+});
 canvas.addEventListener("pointerleave", (event) => {
     if (currentWorkflowMode !== DOCUMENT_MODE) {
         return;
@@ -952,9 +1046,11 @@ resetButton.addEventListener("click", () => {
     }
 
     if (currentWorkflowMode === ASPECT_RATIO_MODE) {
-        shiftPercent = 50;
+        zoomPercent = 100;
         marginPercent = 0;
-        shiftControl.value = "50";
+        cropCenterX = null;
+        cropCenterY = null;
+        zoomControl.value = "100";
         marginControl.value = "0";
         setRotationDegrees(0);
         renderAspectControls();
@@ -1013,7 +1109,7 @@ aspectRatiosInput.addEventListener("input", () => {
     draw();
 });
 
-shiftControl.addEventListener("input", () => {
+zoomControl.addEventListener("input", () => {
     renderAspectControls();
     draw();
 });

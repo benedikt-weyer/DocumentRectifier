@@ -7,6 +7,8 @@ from pathlib import Path
 from PIL import Image
 
 ROTATE_MAX_DEGREES = 10.0
+ZOOM_MIN_PERCENT = 100.0
+ZOOM_MAX_PERCENT = 300.0
 
 
 @dataclass(frozen=True)
@@ -23,8 +25,10 @@ class AspectRatioDefinition:
 @dataclass(frozen=True)
 class AspectRatioCropSelection:
     ratio: AspectRatioDefinition
-    shift_percent: float
     margin_percent: float
+    zoom_percent: float = 100.0
+    crop_center_x: float | None = None
+    crop_center_y: float | None = None
     rotation_degrees: float = 0.0
 
 
@@ -39,6 +43,17 @@ def compute_inner_bounds(
     return margin_x, margin_y, width - margin_x, height - margin_y
 
 
+def compute_max_crop_size(
+    inner_width: float,
+    inner_height: float,
+    target_ratio: float,
+) -> tuple[float, float]:
+    image_ratio = inner_width / inner_height
+    if image_ratio > target_ratio:
+        return inner_height * target_ratio, inner_height
+    return inner_width, inner_width / target_ratio
+
+
 def compute_crop_box(
     width: int,
     height: int,
@@ -51,24 +66,26 @@ def compute_crop_box(
     )
     inner_width = max(inner_right - inner_left, 1.0)
     inner_height = max(inner_bottom - inner_top, 1.0)
-    image_ratio = inner_width / inner_height
     target_ratio = selection.ratio.value
-    shift_factor = min(max(selection.shift_percent, 0.0), 100.0) / 100.0
 
-    if image_ratio > target_ratio:
-        crop_width = inner_height * target_ratio
-        slack_x = max(inner_width - crop_width, 0.0)
-        left = inner_left + (slack_x * shift_factor)
-        top = inner_top
-        right = left + crop_width
-        bottom = inner_bottom
-    else:
-        crop_height = inner_width / target_ratio
-        slack_y = max(inner_height - crop_height, 0.0)
-        left = inner_left
-        top = inner_top + (slack_y * shift_factor)
-        right = inner_right
-        bottom = top + crop_height
+    max_crop_width, max_crop_height = compute_max_crop_size(inner_width, inner_height, target_ratio)
+    zoom_percent = min(max(selection.zoom_percent, ZOOM_MIN_PERCENT), ZOOM_MAX_PERCENT)
+    zoom_scale = ZOOM_MIN_PERCENT / zoom_percent
+    crop_width = max(max_crop_width * zoom_scale, 1.0)
+    crop_height = max(max_crop_height * zoom_scale, 1.0)
+
+    default_center_x = inner_left + (inner_width / 2)
+    default_center_y = inner_top + (inner_height / 2)
+    center_x = selection.crop_center_x if selection.crop_center_x is not None else default_center_x
+    center_y = selection.crop_center_y if selection.crop_center_y is not None else default_center_y
+
+    center_x = _clamp_center(center_x, inner_left, inner_right, crop_width)
+    center_y = _clamp_center(center_y, inner_top, inner_bottom, crop_height)
+
+    left = center_x - (crop_width / 2)
+    top = center_y - (crop_height / 2)
+    right = left + crop_width
+    bottom = top + crop_height
 
     return (
         max(int(round(left)), 0),
@@ -76,6 +93,14 @@ def compute_crop_box(
         min(int(round(right)), width),
         min(int(round(bottom)), height),
     )
+
+
+def _clamp_center(value: float, inner_min: float, inner_max: float, crop_size: float) -> float:
+    low = inner_min + (crop_size / 2)
+    high = inner_max - (crop_size / 2)
+    if low > high:
+        return (inner_min + inner_max) / 2
+    return min(max(value, low), high)
 
 
 def _rotate_and_crop(
