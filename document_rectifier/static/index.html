@@ -39,6 +39,24 @@
         <section class="workspace hidden" id="workspace">
             <div class="panel viewer">
                 <div class="image-name" id="image-name">No image loaded</div>
+                <div class="rotate-dial hidden" id="rotate-dial">
+                    <span class="dial-label">Straighten</span>
+                    <div
+                        class="dial-track"
+                        id="dial-track"
+                        role="slider"
+                        tabindex="0"
+                        aria-label="Straighten rotation"
+                        aria-valuemin="-10"
+                        aria-valuemax="10"
+                        aria-valuenow="0"
+                    >
+                        <canvas id="dial-canvas" height="40"></canvas>
+                        <div class="dial-needle"></div>
+                    </div>
+                    <strong class="dial-value" id="dial-value">0.0°</strong>
+                    <button class="secondary dial-reset" id="rotate-reset" type="button">Reset</button>
+                </div>
                 <div class="canvas-wrap">
                     <canvas id="canvas"></canvas>
                 </div>
@@ -61,6 +79,7 @@
                     <ol>
                         <li>Edit the ratio list in the browser if you want a different target set.</li>
                         <li>The closest listed ratio is chosen automatically for each image.</li>
+                        <li>Drag the Straighten dial above the image to rotate it a few degrees without moving the crop.</li>
                         <li>Use Shift to slide the crop left or right, or top or bottom, depending on the image.</li>
                         <li>Use Margin to trim a small percentage from all sides before the aspect crop is chosen.</li>
                         <li>Save writes the cropped image, Skip leaves it untouched, and Quit stops the session.</li>

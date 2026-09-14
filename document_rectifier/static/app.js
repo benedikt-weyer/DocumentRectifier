@@ -26,6 +26,12 @@ const shiftStartElement = document.getElementById("shift-start");
 const shiftEndElement = document.getElementById("shift-end");
 const marginControl = document.getElementById("margin-control");
 const marginValueElement = document.getElementById("margin-value");
+const rotateDialElement = document.getElementById("rotate-dial");
+const dialTrackElement = document.getElementById("dial-track");
+const dialCanvas = document.getElementById("dial-canvas");
+const dialContext = dialCanvas.getContext("2d");
+const dialValueElement = document.getElementById("dial-value");
+const rotateResetButton = document.getElementById("rotate-reset");
 const actionsElement = document.getElementById("actions");
 const saveButton = document.getElementById("save");
 const resetButton = document.getElementById("reset");
@@ -42,6 +48,8 @@ const LOUPE_ZOOM = 4;
 const LOUPE_OFFSET_X = 24;
 const LOUPE_OFFSET_Y = 24;
 const DRAG_DAMPING = 0.35;
+const ROTATE_MAX_DEGREES = 10;
+const ROTATE_PIXELS_PER_DEGREE = 8;
 
 let currentScreen = "idle";
 let currentWorkflowMode = null;
@@ -56,6 +64,10 @@ let dragOriginClient = null;
 let aspectRatioDefinitions = [];
 let shiftPercent = 50;
 let marginPercent = 0;
+let rotationDegrees = 0;
+let dialDragOriginAngle = null;
+let dialDragOriginClientX = null;
+let dialDragPointerId = null;
 
 function setStatus(text) {
     statusElement.textContent = text;
@@ -408,6 +420,82 @@ function renderAspectControls() {
     syncActionState();
 }
 
+function setRotationDegrees(value) {
+    const rounded = Math.round(clamp(value, -ROTATE_MAX_DEGREES, ROTATE_MAX_DEGREES) * 10) / 10;
+    rotationDegrees = rounded;
+    dialTrackElement.setAttribute("aria-valuenow", String(rounded));
+    dialValueElement.textContent = `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}°`;
+    drawRotateDial();
+    draw();
+}
+
+function drawRotateDial() {
+    const width = dialTrackElement.clientWidth;
+    const height = dialCanvas.height;
+    if (width === 0) {
+        return;
+    }
+
+    dialCanvas.width = width;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    dialContext.clearRect(0, 0, width, height);
+    dialContext.strokeStyle = "rgba(31, 41, 51, 0.35)";
+    dialContext.fillStyle = "rgba(31, 41, 51, 0.55)";
+    dialContext.font = "11px IBM Plex Sans, sans-serif";
+    dialContext.textAlign = "center";
+
+    const halfSpan = Math.ceil((width / 2) / ROTATE_PIXELS_PER_DEGREE) + 1;
+    for (let degree = -halfSpan; degree <= halfSpan; degree += 1) {
+        const x = centerX + ((degree - rotationDegrees) * ROTATE_PIXELS_PER_DEGREE);
+        if (x < 0 || x > width) {
+            continue;
+        }
+
+        const isMajor = degree % 5 === 0;
+        const tickHeight = isMajor ? height * 0.55 : height * 0.3;
+        dialContext.lineWidth = isMajor ? 1.5 : 1;
+        dialContext.beginPath();
+        dialContext.moveTo(x, centerY - (tickHeight / 2));
+        dialContext.lineTo(x, centerY + (tickHeight / 2));
+        dialContext.stroke();
+
+        if (isMajor) {
+            dialContext.fillText(String(degree), x, centerY + (tickHeight / 2) + 12);
+        }
+    }
+}
+
+function beginDialDrag(event) {
+    dialDragPointerId = event.pointerId;
+    dialDragOriginAngle = rotationDegrees;
+    dialDragOriginClientX = event.clientX;
+    dialTrackElement.setPointerCapture(event.pointerId);
+}
+
+function updateDialDrag(event) {
+    if (dialDragPointerId !== event.pointerId || dialDragOriginAngle === null) {
+        return;
+    }
+
+    const deltaX = event.clientX - dialDragOriginClientX;
+    setRotationDegrees(dialDragOriginAngle + (deltaX / ROTATE_PIXELS_PER_DEGREE));
+}
+
+function endDialDrag(event) {
+    if (dialDragPointerId !== event.pointerId) {
+        return;
+    }
+
+    if (dialTrackElement.hasPointerCapture(event.pointerId)) {
+        dialTrackElement.releasePointerCapture(event.pointerId);
+    }
+    dialDragPointerId = null;
+    dialDragOriginAngle = null;
+    dialDragOriginClientX = null;
+}
+
 function renderModePicker(availableModes) {
     chooseDocumentButton.disabled = !availableModes.includes(DOCUMENT_MODE);
     chooseAspectRatioButton.disabled = !availableModes.includes(ASPECT_RATIO_MODE);
@@ -424,11 +512,16 @@ function renderLayout() {
     setHidden(pointsSectionElement, !isDocumentMode);
     setHidden(aspectGuideElement, !isAspectMode);
     setHidden(aspectControlsElement, !isAspectMode);
+    setHidden(rotateDialElement, !isAspectMode);
     setHidden(actionsElement, !(isDocumentMode || isAspectMode));
     setHidden(autoDetectButton, !isDocumentMode);
 
     if (!isDocumentMode) {
         hideLoupe();
+    }
+
+    if (isAspectMode) {
+        drawRotateDial();
     }
 }
 
@@ -539,7 +632,20 @@ function draw() {
     canvas.height = Math.round(image.naturalHeight * scale);
 
     clearCanvas();
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const cropState = currentWorkflowMode === ASPECT_RATIO_MODE ? getAspectCropState() : null;
+    if (cropState !== null && rotationDegrees !== 0) {
+        const pivotX = ((cropState.left + cropState.right) / 2) * scale;
+        const pivotY = ((cropState.top + cropState.bottom) / 2) * scale;
+        context.save();
+        context.translate(pivotX, pivotY);
+        context.rotate((rotationDegrees * Math.PI) / 180);
+        context.translate(-pivotX, -pivotY);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        context.restore();
+    } else {
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    }
 
     if (currentWorkflowMode === DOCUMENT_MODE) {
         drawDocumentOverlay();
@@ -568,6 +674,7 @@ async function fetchState() {
         points = [];
         dragIndex = null;
         activePointerId = null;
+        rotationDegrees = 0;
         hideLoupe();
         renderModePicker(state.availableModes || []);
         imageNameElement.textContent = "Choose a workflow";
@@ -584,6 +691,7 @@ async function fetchState() {
         points = [];
         dragIndex = null;
         activePointerId = null;
+        rotationDegrees = 0;
         hideLoupe();
         renderPoints();
         renderAspectControls();
@@ -617,6 +725,7 @@ async function fetchState() {
             marginPercent = 0;
             shiftControl.value = "50";
             marginControl.value = "0";
+            setRotationDegrees(0);
             setStatus(`Adjust crop for ${state.imageName}`);
         }
 
@@ -702,6 +811,7 @@ async function submit(action) {
                 ratioHeight: cropState.ratio.height,
                 shiftPercent,
                 marginPercent,
+                rotationDegrees,
             };
         }
     } else {
@@ -846,10 +956,29 @@ resetButton.addEventListener("click", () => {
         marginPercent = 0;
         shiftControl.value = "50";
         marginControl.value = "0";
+        setRotationDegrees(0);
         renderAspectControls();
         draw();
         setStatus(currentImageName ? `Reset crop controls for ${currentImageName}` : "Waiting for image...");
     }
+});
+
+dialTrackElement.addEventListener("pointerdown", beginDialDrag);
+dialTrackElement.addEventListener("pointermove", updateDialDrag);
+dialTrackElement.addEventListener("pointerup", endDialDrag);
+dialTrackElement.addEventListener("pointercancel", endDialDrag);
+dialTrackElement.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setRotationDegrees(rotationDegrees - (event.shiftKey ? 1 : 0.1));
+    } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setRotationDegrees(rotationDegrees + (event.shiftKey ? 1 : 0.1));
+    }
+});
+
+rotateResetButton.addEventListener("click", () => {
+    setRotationDegrees(0);
 });
 
 saveButton.addEventListener("click", async () => {
@@ -897,12 +1026,18 @@ marginControl.addEventListener("input", () => {
 window.addEventListener("resize", () => {
     draw();
     hideLoupe();
+    if (currentWorkflowMode === ASPECT_RATIO_MODE) {
+        drawRotateDial();
+    }
 });
 
 image.addEventListener("load", () => {
     draw();
     renderPoints();
     renderAspectControls();
+    if (currentWorkflowMode === ASPECT_RATIO_MODE) {
+        drawRotateDial();
+    }
 });
 
 renderPoints();

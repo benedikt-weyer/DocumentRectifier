@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
+
+ROTATE_MAX_DEGREES = 10.0
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,7 @@ class AspectRatioCropSelection:
     ratio: AspectRatioDefinition
     shift_percent: float
     margin_percent: float
+    rotation_degrees: float = 0.0
 
 
 def compute_inner_bounds(
@@ -74,6 +78,60 @@ def compute_crop_box(
     )
 
 
+def _rotate_and_crop(
+    image: Image.Image,
+    crop_box: tuple[int, int, int, int],
+    rotation_degrees: float,
+) -> Image.Image:
+    """Straighten the image by rotating it about the crop's center, then crop
+    the same box back out. The crop's position and size never move; only the
+    image content beneath it is rotated. The whole image is upscaled first so
+    the rotated content still fully covers the crop box (when the source has
+    enough surrounding margin to allow it)."""
+    left, top, right, bottom = crop_box
+    crop_width = max(right - left, 1)
+    crop_height = max(bottom - top, 1)
+    pivot_x = (left + right) / 2
+    pivot_y = (top + bottom) / 2
+
+    angle_rad = math.radians(abs(rotation_degrees))
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    scale = max(
+        (crop_width * cos_a + crop_height * sin_a) / crop_width,
+        (crop_height * cos_a + crop_width * sin_a) / crop_height,
+        1.0,
+    )
+
+    scaled_size = (
+        max(round(image.width * scale), 1),
+        max(round(image.height * scale), 1),
+    )
+    scaled = image.resize(scaled_size, Image.LANCZOS)
+    pivot_scaled = (pivot_x * scale, pivot_y * scale)
+    band_count = len(scaled.getbands())
+    fill = (255,) * band_count if band_count > 1 else 255
+    if scaled.mode == "RGBA":
+        fill = (255, 255, 255, 0)
+
+    # PIL rotates counter-clockwise for a positive angle; the browser preview
+    # rotates the canvas clockwise for a positive value, so negate to match.
+    rotated = scaled.rotate(
+        -rotation_degrees,
+        resample=Image.BICUBIC,
+        center=pivot_scaled,
+        fillcolor=fill,
+    )
+
+    final_box = (
+        round(pivot_scaled[0] - crop_width / 2),
+        round(pivot_scaled[1] - crop_height / 2),
+        round(pivot_scaled[0] + crop_width / 2),
+        round(pivot_scaled[1] + crop_height / 2),
+    )
+    return rotated.crop(final_box)
+
+
 def crop_image_to_aspect(
     image_path: Path,
     output_path: Path,
@@ -81,5 +139,12 @@ def crop_image_to_aspect(
 ) -> None:
     with Image.open(image_path) as image:
         crop_box = compute_crop_box(image.width, image.height, selection)
-        cropped = image.crop(crop_box)
+        rotation_degrees = max(
+            min(selection.rotation_degrees, ROTATE_MAX_DEGREES),
+            -ROTATE_MAX_DEGREES,
+        )
+        if abs(rotation_degrees) < 0.01:
+            cropped = image.crop(crop_box)
+        else:
+            cropped = _rotate_and_crop(image, crop_box, rotation_degrees)
         cropped.save(output_path)
